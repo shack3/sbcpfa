@@ -1,0 +1,27 @@
+{
+	"system_id" : "E428B557-6E4C-4EB4-BB8D-7FE5F5807758",
+	"measurements" : [
+		{
+			"name"  : "Corriente",
+			"unit"  : "A/h",
+			"value" : 3241
+		},
+		{
+			"name"  : "Temperatura",
+			"unit"  : "C",
+			"value" : 23
+		},
+		{
+			"name"  : "Luminosidad",
+			"unit"  : "lmn",
+			"value" : 7
+		}
+	]
+}
+
+{
+	"system_id" : "E428B557-6E4C-4EB4-BB8D-7FE5F5807758",
+	"device_id": "",
+	"actuator_name" : "",
+	"actuator_status": 8
+}
