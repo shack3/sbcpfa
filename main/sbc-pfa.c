@@ -15,19 +15,16 @@
 #include "mqtt_utils.h"
 #include "nvs_utils.h"
 #include "configuration_point.h"
+#include "aws_updater.h"
 
-#define SYSTEM_ID "18001840-2CEF-4025-956F-C180E99B927A"
-#define DEVICE_ID "4C289BFE-4F3E-498A-8A5D-CF8DD39372AA" 
-#define SEND_MEASUREMENTS_RATIO 10000//300000
+#define SYSTEM_ID "18001840-2CEF-4025-956F-C180E99B927A" // Deben proporcionarte tu ID de sistema.
+#define DEVICE_ID "4C289BFE-4F3E-498A-8A5D-CF8DD39372AA" // Deben proporcionarte tu ID de este dispositivo en concreto.
+#define SEND_MEASUREMENTS_RATIO 10000 // 10000 = 10s, ajustar al dispositivo en concreto.
 
 
 #define ACTUATORS_PARTITION "ACTUATORS"
 
 char http_client_json_buffer[1024];
-
-float current;
-float temperature;
-float luminosity;
 
 esp_mqtt_client_handle_t mqtt_client;
 
@@ -36,15 +33,19 @@ char** actuators_names;
 int* actuators_ports;
 int* actuators_status;
 
-
+// Importante, este metodo es usado para enviar los datos que registra tu ESP32, 
+// si tu dispositivo debe enviar telemetrias, este JSON debe ser rellenado,
+// la funcion de envio está comentada en el main, descomentarla y ajustar el JSON
+// para tu dispositivo en concreto, se proporciona uno de ejemplo.
 void send_measurements(void* parameters)
 {
 	while(1) 
 	{
-		vTaskDelay(pdMS_TO_TICKS(SEND_MEASUREMENTS_RATIO)); // 300000 = 5 min
+		vTaskDelay(pdMS_TO_TICKS(SEND_MEASUREMENTS_RATIO)); 
 		
-		sprintf(http_client_json_buffer, "{\
-			\"system_id\" : \"18001840-2CEF-4025-956F-C180E99B927A\",\
+		// Debes modificar el JSON con tu sistema.
+		//sprintf(http_client_json_buffer, "{\
+			\"system_id\" : \"%s\",\
 			\"measurements\" : [\
 				{\
 					\"name\"  : \"Corriente\",\
@@ -62,13 +63,14 @@ void send_measurements(void* parameters)
 					\"value\" : %f\
 				}\
 			]\
-		}", current, temperature, luminosity);
+		}", system_id, current, temperature, luminosity);
 		
 		post(http_client_json_buffer);
 		
 	}
 }
 
+// Este método settea todos los actuadores de tu dispositivo a su estado. 
 void set_actuators() {
 	
 	for(int i=0; i < actuators_length; i++) {
@@ -78,6 +80,9 @@ void set_actuators() {
 	
 }
 
+// Lee los actuadores grabados en NVS, por si no hay conexion a internet, que siga funcionando 
+// correctamente en el ultimo estado en que se quedó. Tambien transforma los valores leidos en
+// NVS a estructuras de array, para poder trabajar con ellos más fácilmente.
 esp_err_t get_actuators() {
 	// Partición: ACTUATORS
 	// ACTUATORS_LENGTH -> 3 || Numero de actuadores en el sistema.
@@ -132,6 +137,10 @@ esp_err_t get_actuators() {
 	return ESP_OK;
 }
 
+// Esto es un handler de la libreria http_client_utils, este metodo, es llamado 
+// cuando se recibe la informacion de la peticion GET actuators. La peticion 
+// se realiza cuando se enciende el dispositivo, si tiene conexion a internet,
+// cuando recibe los valores, se guardan en la memoria NVS.
 void OnGetActuators(char** response, int response_lenght)
 {
 	char respuesta[512];
@@ -174,11 +183,14 @@ void OnGetActuators(char** response, int response_lenght)
 }
 
 // Cada vez que se conecta al Broker, se subscribe a los temas.
+// Habria que cambiar el system_id por el define SYSTEM_ID
 void OnMQTTConnected() {
 	esp_mqtt_client_subscribe(mqtt_client, "actuators/18001840-2CEF-4025-956F-C180E99B927A", 0);
 	esp_mqtt_client_subscribe(mqtt_client, "new_actuators/18001840-2CEF-4025-956F-C180E99B927A", 0);
 }
 
+// Handler para las suscripciones del dispositivo, cuando se recibe un mensaje por 
+// los temas en concreto, se analiza ese mensaje en este metodo.
 void OnMQTTDataRecived(int topic_length, char** topic, int data_length, char** data) {
     // Realiza la operación que necesitas desde el main con los parámetros
     printf("Operación desde el main con parámetros...\n");
@@ -245,209 +257,46 @@ void OnMQTTDataRecived(int topic_length, char** topic, int data_length, char** d
 	
 }
 
-#define AC_SENSOR_SAMPLING_NUMBER 100
-#define AC_SENSOR_ATTENUATION ADC_ATTEN_DB_0
-#define DELAY_SENSOR_READ 5000
-
-adc_oneshot_unit_handle_t adc1_handle;
-	
-adc_oneshot_unit_init_cfg_t init_config1 = {
-	.unit_id = ADC_UNIT_1,
-	.ulp_mode = ADC_ULP_MODE_DISABLE,
-};
-
-
-void LeerCorrientePotenciometro(void* parameters)
-{
-
-	adc_cali_handle_t adc_cali_handle;
-
-	adc_oneshot_chan_cfg_t adc1_config = {
-		.bitwidth = ADC_BITWIDTH_DEFAULT,
-		.atten = AC_SENSOR_ATTENUATION,
-	};
-
-
-	adc_cali_line_fitting_config_t calibration_config = {
-		.unit_id = ADC_UNIT_1,
-		.atten = AC_SENSOR_ATTENUATION,
-		.bitwidth = ADC_BITWIDTH_DEFAULT,
-		.default_vref = 1100
-	};
-	
-	//ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
-	ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_6, &adc1_config));
-	
-	// SUPPORTEA enumerator ADC_CALI_SCHEME_VER_CURVE_FITTING Curve fitting scheme.
-
-	ESP_ERROR_CHECK(adc_cali_create_scheme_line_fitting(&calibration_config, &adc_cali_handle));
-	
-	int raw;
-	int voltage_result;
-	int voltage_temp;
-	
-	while (1) {
-		raw = 0;
-		voltage_result = 0;
-		voltage_temp = 0;
-		for(int i = 0; i < AC_SENSOR_SAMPLING_NUMBER; i++) 
-		{
-			adc_oneshot_read(adc1_handle, ADC_CHANNEL_6, &raw);
-			adc_cali_raw_to_voltage(adc_cali_handle, raw, &voltage_temp);
-			
-			voltage_result += voltage_temp;
-			
-			voltage_temp = 0;
-			raw = 0;
-			vTaskDelay(1);
-		}
-		
-		voltage_result = (voltage_result / AC_SENSOR_SAMPLING_NUMBER); 
-		//amperage_result = ((((voltage_result/1000) * 60)/1.1f) - 30.0f);
-		
-		current = (voltage_result * 5000)/1100.0f;
-		printf("Corriente:%f\n", current);
-		vTaskDelay(DELAY_SENSOR_READ / portTICK_PERIOD_MS);
-	}
-}
-
-void LeerLuminosidadPotenciometro(void* parameters)
-{
-
-	adc_cali_handle_t adc_cali_handle;
-
-	adc_oneshot_chan_cfg_t adc1_config = {
-		.bitwidth = ADC_BITWIDTH_DEFAULT,
-		.atten = AC_SENSOR_ATTENUATION,
-	};
-
-
-	adc_cali_line_fitting_config_t calibration_config = {
-		.unit_id = ADC_UNIT_1,
-		.atten = AC_SENSOR_ATTENUATION,
-		.bitwidth = ADC_BITWIDTH_DEFAULT,
-		.default_vref = 1100
-	};
-	
-	//ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
-	ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_4, &adc1_config));
-	
-	// SUPPORTEA enumerator ADC_CALI_SCHEME_VER_CURVE_FITTING Curve fitting scheme.
-
-	ESP_ERROR_CHECK(adc_cali_create_scheme_line_fitting(&calibration_config, &adc_cali_handle));
-	
-	int raw;
-	int voltage_result;
-	int voltage_temp;
-	
-	while (1) {
-		raw = 0;
-		voltage_result = 0;
-		voltage_temp = 0;
-		for(int i = 0; i < AC_SENSOR_SAMPLING_NUMBER; i++) 
-		{
-			adc_oneshot_read(adc1_handle, ADC_CHANNEL_4, &raw);
-			adc_cali_raw_to_voltage(adc_cali_handle, raw, &voltage_temp);
-			
-			voltage_result += voltage_temp;
-			
-			voltage_temp = 0;
-			raw = 0;
-			vTaskDelay(1);
-		}
-		
-		voltage_result = (voltage_result / AC_SENSOR_SAMPLING_NUMBER); 
-		//amperage_result = ((((voltage_result/1000) * 60)/1.1f) - 30.0f);
-		
-		luminosity = (voltage_result * 20)/1100.0f;
-		printf("Luminosidad:%f\n", luminosity);
-		vTaskDelay(DELAY_SENSOR_READ / portTICK_PERIOD_MS);
-	}
-}
-
-void LeerTemperaturaPotenciometro(void* parameters)
-{
-
-	
-	adc_cali_handle_t adc_cali_handle;
-
-	adc_oneshot_chan_cfg_t adc1_config = {
-		.bitwidth = ADC_BITWIDTH_DEFAULT,
-		.atten = AC_SENSOR_ATTENUATION,
-	};
-
-
-	adc_cali_line_fitting_config_t calibration_config = {
-		.unit_id = ADC_UNIT_1,
-		.atten = AC_SENSOR_ATTENUATION,
-		.bitwidth = ADC_BITWIDTH_DEFAULT,
-		.default_vref = 1100
-	};
-	
-	ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_7, &adc1_config));
-	
-	// SUPPORTEA enumerator ADC_CALI_SCHEME_VER_CURVE_FITTING Curve fitting scheme.
-
-	ESP_ERROR_CHECK(adc_cali_create_scheme_line_fitting(&calibration_config, &adc_cali_handle));
-	
-	int raw;
-	int voltage_result;
-	int voltage_temp;
-	
-	while (1) {
-		raw = 0;
-		voltage_result = 0;
-		voltage_temp = 0;
-		for(int i = 0; i < AC_SENSOR_SAMPLING_NUMBER; i++) 
-		{
-			adc_oneshot_read(adc1_handle, ADC_CHANNEL_7, &raw);
-			adc_cali_raw_to_voltage(adc_cali_handle, raw, &voltage_temp);
-			
-			voltage_result += voltage_temp;
-			
-			voltage_temp = 0;
-			raw = 0;
-			vTaskDelay(1);
-		}
-		
-		voltage_result = (voltage_result / AC_SENSOR_SAMPLING_NUMBER); 
-		//amperage_result = ((((voltage_result/1000) * 60)/1.1f) - 30.0f);
-		
-		temperature = ((voltage_result * 65)/1100.0f) - 15.0f;
-		printf("Temperatura:%f\n", temperature);
-		vTaskDelay(DELAY_SENSOR_READ / portTICK_PERIOD_MS);
-	}
-}
-
-
 
 void app_main(void)
 {
+	// Funciones externas de las librerias.
 	mqtt_data_event_handler = OnMQTTDataRecived;
 	mqtt_connected_event_handler = OnMQTTConnected;
 	http_get_actuators_event_handler = OnGetActuators;
+	
 	ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
 	
-	
+	// Importante! Estaría bien, como mejora, añadir funcionalidad
+	// para que el sistema espere para que se conecte al wifi. Puede que no se
+	// conecte al WiFi en 8 segundos.
 	wifi_init_sta();
 	
-	vTaskDelay(8000 / portTICK_PERIOD_MS);
-	//ESP_ERROR_CHECK(init_web_server());
-	mqtt_client = mqtt_app_start();
+	vTaskDelay(8000 / portTICK_PERIOD_MS); // Puede que debas modificarlo, dado a que tu sistema no se conecte a tiempo a la estacion wifi.
 	
-	vTaskDelay(8000 / portTICK_PERIOD_MS);
+	// Falta la funcionalidad para que guarde los valores que recoge el Form de la pagina web 
+	// a las variables de ssid y password.
+	//ESP_ERROR_CHECK(init_web_server()); 
+	
+	mqtt_client = mqtt_app_start(); // Inicializacion de driver MQTT
+	
+	vTaskDelay(8000 / portTICK_PERIOD_MS); // Espera activa para que se complete la inicializacion de MQTT.
 	
 	get_actuators_from_bbdd(SYSTEM_ID, DEVICE_ID); // Recogemos los actuadores de base de datos y los grabamos en la NVS.
 	get_actuators(); // Leemos esos actuadores de la NVS y los guardamos como variables.
 	set_actuators(); // Ponemos esos actuadores como se quedaron.
 	
-	ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+
+	// Crear tareas correspondientes si tu sistema envia mediciones. 
+	//xTaskCreate(LeerTemperaturaPotenciometro, "LeerTemperaturaPotenciometro", 2048, NULL, 5, NULL);
+	//xTaskCreate(LeerCorrientePotenciometro, "LeerCorrientePotenciometro", 2048, NULL, 5, NULL);
+	//xTaskCreate(LeerLuminosidadPotenciometro, "LeerLuminosidadPotenciometro", 2048, NULL, 5, NULL);
 	
-	xTaskCreate(LeerTemperaturaPotenciometro, "LeerTemperaturaPotenciometro", 2048, NULL, 5, NULL);
-	xTaskCreate(LeerCorrientePotenciometro, "LeerCorrientePotenciometro", 2048, NULL, 5, NULL);
-	xTaskCreate(LeerLuminosidadPotenciometro, "LeerLuminosidadPotenciometro", 2048, NULL, 5, NULL);
+	// Descomentar si tu dispositivo va a enviar mediciones al sistema. 
+	//xTaskCreate(send_measurements, "send_measurements", 4096, NULL, 5, NULL);
 	
-	xTaskCreate(send_measurements, "send_measurements", 4096, NULL, 5, NULL);
+	// Descomentar si tu sistema va a realizar actualizaciones OTA.
+	//xTaskCreate(check_aws_update_task, "aws_update_task", 2048, NULL, 5, NULL);
 	
 }
